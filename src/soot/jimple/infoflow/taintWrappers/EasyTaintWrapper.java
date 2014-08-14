@@ -154,10 +154,14 @@ public class EasyTaintWrapper extends AbstractTaintWrapper implements Cloneable 
 		
 		final Set<AccessPath> taints = new HashSet<AccessPath>();
 		final SootMethod method = stmt.getInvokeExpr().getMethod();
+		boolean hasNoBody = false;
 		
 		// If the callee is a phantom class or has no body, we pass on the taint
 		if (method.isPhantom() || !method.hasActiveBody())
+		{
+			hasNoBody = true;
 			taints.add(taintedPath);
+		}
 
 		// For the moment, we don't implement static taints on wrappers. Pass it on
 		// not to break anything
@@ -217,25 +221,35 @@ public class EasyTaintWrapper extends AbstractTaintWrapper implements Cloneable 
 		}
 				
 		//if param is tainted && classList contains classname && if list. contains signature of method -> add propagation
-		if (isSupported && wrapType == MethodWrapType.CreateTaint)
+		if ((isSupported && wrapType == MethodWrapType.CreateTaint)
+				|| (hasNoBody && wrapType == MethodWrapType.NotRegistered
+				&& !method.getDeclaringClass().getName().startsWith("android")))
+		{
 			for (Value param : stmt.getInvokeExpr().getArgs()) {
 				if (param.equals(taintedPath.getPlainValue())) {
 					// If we call a method on an instance with a tainted parameter, this
 					// instance (base object) is assumed to be tainted.
 					if (!taintEqualsHashCode)
 						if (stmt.getInvokeExprBox().getValue() instanceof InstanceInvokeExpr)
+						{
 							taints.add(new AccessPath(((InstanceInvokeExpr) stmt.getInvokeExprBox().getValue()).getBase(), true));
-					
+							if (hasNoBody && wrapType == MethodWrapType.NotRegistered)
+								logger.info("LUCIA: created taint for base {}", stmt);
+						}
 					// If make sure to also taint the left side of an assignment
 					// if the object just got tainted 
 					if (stmt instanceof DefinitionStmt)
+					{
 						taints.add(new AccessPath(((DefinitionStmt) stmt).getLeftOp(), true));
+						if (hasNoBody && wrapType == MethodWrapType.NotRegistered)
+							logger.info("LUCIA: created taint for left side {}", stmt);		
+					}
 				}
 				
 				// The parameter as such stays tainted
 				taints.add(taintedPath);
 			}
-		
+		}
 		return taints;
 	}
 	

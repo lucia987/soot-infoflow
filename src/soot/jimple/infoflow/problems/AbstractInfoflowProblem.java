@@ -19,12 +19,17 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import soot.ArrayType;
+import soot.ByteType;
+import soot.CharType;
+import soot.DoubleType;
+import soot.FloatType;
 import soot.IntType;
 import soot.Local;
 import soot.LongType;
 import soot.PrimType;
 import soot.RefType;
 import soot.Scene;
+import soot.ShortType;
 import soot.SootClass;
 import soot.SootMethod;
 import soot.Type;
@@ -103,10 +108,30 @@ public abstract class AbstractInfoflowProblem extends DefaultJimpleIFDSTabulatio
 			return true;
 		
 		if (destType instanceof PrimType && sourceType instanceof PrimType)
+			/*
 			if (sourceType instanceof LongType && destType instanceof IntType
 					|| destType instanceof LongType && sourceType instanceof IntType)
 				return true;
-			
+				*/
+			/* http://docs.oracle.com/javase/specs/jls/se7/html/jls-5.html */
+			if ((sourceType instanceof ByteType ||
+					sourceType instanceof CharType ||
+					sourceType instanceof ShortType ||
+					sourceType instanceof IntType ||
+					sourceType instanceof LongType ||
+					sourceType instanceof FloatType ||
+					sourceType instanceof DoubleType)
+					&&
+					(destType instanceof ByteType ||
+							destType instanceof CharType ||
+							destType instanceof ShortType ||
+							destType instanceof IntType ||
+							destType instanceof LongType ||
+							destType instanceof FloatType ||
+							destType instanceof DoubleType))
+				return true;
+
+		//logger.error("LUCIA: Cannot cast to destination type {} from source type {}", destType, sourceType);
 		return false;
 	}
 		

@@ -22,6 +22,8 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
+import nus.soc.extensions.TaintedStmtTag;
+import nus.soc.extensions.TaintSourceType;
 import soot.ArrayType;
 import soot.IntType;
 import soot.Local;
@@ -128,6 +130,9 @@ public class InfoflowProblem extends AbstractInfoflowProblem {
 		assert inspectSources || source != getZeroValue();
 		
 		Set<Abstraction> res = new HashSet<Abstraction>();
+		// [NUS][Tag] find source type
+		TaintSourceType sourceType = TaintSourceType.NONE;
+		
 		if(taintWrapper == null)
 			return Collections.emptySet();
 		
@@ -140,12 +145,18 @@ public class InfoflowProblem extends AbstractInfoflowProblem {
 				found = aliasing.mayAlias(iiExpr.getBase(), source.getAccessPath().getPlainValue());
 			}
 			
+			// [NUS][Tag] the base is the source
+			if (found)
+				sourceType = TaintSourceType.WRAPPER_CALL_BASE;
+				
 			// or one of the parameters must be tainted
 			if (!found)
 				for (int paramIdx = 0; paramIdx < iStmt.getInvokeExpr().getArgCount(); paramIdx++)
 					if (aliasing.mayAlias(source.getAccessPath().getPlainValue(),
 							iStmt.getInvokeExpr().getArg(paramIdx))) {
 						found = true;
+						// [NUS][Tag] a param is the source
+						sourceType = TaintSourceType.WRAPPER_CALL_PARAM;
 						break;
 				}
 			
@@ -164,6 +175,13 @@ public class InfoflowProblem extends AbstractInfoflowProblem {
 				else {
 					Abstraction newAbs = source.deriveNewAbstraction(val, iStmt);
 					res.add(newAbs);
+					// [NUS][Tag] tag taint-wrapped call
+					if (newAbs.isAbstractionActive())
+					{
+						logger.info("[NUS][TAG] tag taint-wrapped call {} as {}\n\t\t{}",
+								iStmt, sourceType, newAbs);
+						TaintedStmtTag.enhanceTag(iStmt, newAbs, sourceType);
+					}
 				
 					// If the taint wrapper creates a new taint, this must be propagated
 					// backwards as there might be aliases for the base object
@@ -311,7 +329,8 @@ public class InfoflowProblem extends AbstractInfoflowProblem {
 					Set<Abstraction> taintSet,
 					boolean cutFirstField,
 					SootMethod method,
-					Type targetType) {
+					Type targetType,
+					TaintSourceType taintSourceType) {
 				// Do not taint static fields unless the option is enabled
 				if (!enableStaticFields && leftValue instanceof StaticFieldRef)
 					return;
@@ -346,6 +365,15 @@ public class InfoflowProblem extends AbstractInfoflowProblem {
 					newAbs = source.deriveNewAbstraction(new AccessPath(leftValue, true), assignStmt, true);
 				else
 					newAbs = source.deriveNewAbstraction(leftValue, cutFirstField, assignStmt, targetType);
+
+				// [NUS][TAG] Finally add tag to stmt
+				if (newAbs.isAbstractionActive())
+				{
+					logger.trace("[NUS][TAG] Tagged assignStmt {} as {}\n\t\t{}",
+							assignStmt, taintSourceType, newAbs);
+					TaintedStmtTag.enhanceTag(assignStmt, newAbs, taintSourceType); 
+				}
+				
 				taintSet.add(newAbs);
 				
 				if (triggerInaktiveTaintOrReverseFlow(assignStmt, leftValue, newAbs))
@@ -403,6 +431,14 @@ public class InfoflowProblem extends AbstractInfoflowProblem {
 										is.getRightOp(), is, false, false);
 								res.add(abs);
 								
+								// [NUS][Tag] identity statement with param access as SOURCE
+								if(abs.isAbstractionActive())
+								{
+									logger.trace("[NUS][TAG] Tagged identity stmt {} as {}\n\t\t{}",
+											is, TaintSourceType.SOURCE, abs);
+									TaintedStmtTag.enhanceTag(is, abs, TaintSourceType.SOURCE);
+								}
+								
 								// Compute the aliases
 								if (triggerInaktiveTaintOrReverseFlow(is, is.getLeftOp(), abs))
 									computeAliasTaints(d1, is, is.getLeftOp(), res, interproceduralCFG().getMethodOf(is), abs);
@@ -412,7 +448,17 @@ public class InfoflowProblem extends AbstractInfoflowProblem {
 							boolean addOriginal = true;
 							if (is.getRightOp() instanceof CaughtExceptionRef) {
 								if (source.getExceptionThrown()) {
-									res.add(source.deriveNewAbstractionOnCatch(is.getLeftOp()));
+									Abstraction absOnCatch = source.deriveNewAbstractionOnCatch(is.getLeftOp());
+									
+									// [NUS][Tag] catch exception ref
+									if (absOnCatch.isAbstractionActive())
+									{
+										logger.trace("[NUS][TAG] Tagged identity stmt {} as {}\n\t\t{}",
+												is, TaintSourceType.CATCH_EXCEPTION_REF, absOnCatch);
+										TaintedStmtTag.enhanceTag(is, absOnCatch, TaintSourceType.CATCH_EXCEPTION_REF);
+									}
+									
+									res.add(absOnCatch);
 									addOriginal = false;
 								}
 							}
@@ -456,6 +502,14 @@ public class InfoflowProblem extends AbstractInfoflowProblem {
                                 		sourceInfo, assignStmt.getRightOp(), assignStmt,
                                 		false, false);
                                 res.add(abs);
+                            
+                            	// [NUS][Tag] assign stmt as source statement
+                                if(abs.isAbstractionActive())
+                                {
+									logger.trace("[NUS][TAG] Tagged assignStmt {} as {}\n\t\t{}",
+											assignStmt, TaintSourceType.SOURCE, abs);
+									TaintedStmtTag.enhanceTag(assignStmt, abs, TaintSourceType.SOURCE);
+                                }
                                 
                                 // Compute the aliases
 								if (triggerInaktiveTaintOrReverseFlow(assignStmt, assignStmt.getLeftOp(), abs))
@@ -484,6 +538,7 @@ public class InfoflowProblem extends AbstractInfoflowProblem {
 								newSource = source;
 							
 							// Create the new taints that may be created by this assignment
+							// [NUS] Also add tags inside createNewTaintOnAssignment if taints are created
 							Set<Abstraction> res = createNewTaintOnAssignment(src, assignStmt, right,
 									leftValue, rightVals, isSink, d1, newSource);
 							if (res != null)
@@ -552,6 +607,8 @@ public class InfoflowProblem extends AbstractInfoflowProblem {
 								Abstraction d1,
 								final Abstraction newSource) {
 							boolean addLeftValue = false;
+							TaintSourceType taintSourceType = TaintSourceType.NONE;
+							
 							// If we have a non-empty postdominator stack, we taint
 							// every assignment target
 							if (newSource.getTopPostdominator() != null || newSource.getAccessPath().isEmpty()) {
@@ -563,8 +620,11 @@ public class InfoflowProblem extends AbstractInfoflowProblem {
 								if (d1 != null && d1.getAccessPath().isEmpty() && !(leftValue instanceof FieldRef))
 									return Collections.singleton(newSource);
 								
-								if (newSource.getAccessPath().isEmpty())
+								if (newSource.getAccessPath().isEmpty()) {
+									// [NUS][Tag] source type: implicit flow
+									taintSourceType = TaintSourceType.IMPLICIT;
 									addLeftValue = true;
+								}
 							}
 							
 							// If we have a = x with the taint "x" being inactive,
@@ -599,6 +659,9 @@ public class InfoflowProblem extends AbstractInfoflowProblem {
 											if (enableStaticFields && mappedAP != null) {
 												addLeftValue = true;
 												cutFirstField = true;
+
+												// [NUS][Tag] source type: static field ref
+												taintSourceType = TaintSourceType.ASGN_STATIC_FIELD;
 											}
 										}
 										// check for field references
@@ -615,12 +678,16 @@ public class InfoflowProblem extends AbstractInfoflowProblem {
 												addLeftValue = true;
 												cutFirstField = (mappedAP.getFieldCount() > 0
 														&& mappedAP.getFirstField() == rightField);
+												// [NUS][Tag] source type: instance field ref
+												taintSourceType = TaintSourceType.ASGN_INSTANCE_FIELD;
 											}
 											else if (aliasing.mayAlias(rightBase, sourceBase)
 													&& newSource.getAccessPath().getFieldCount() == 0
 													&& newSource.getAccessPath().getTaintSubFields()) {
 												addLeftValue = true;
 												targetType = rightField.getType();
+												// [NUS][Tag] source type: instance field ref
+												taintSourceType = TaintSourceType.ASGN_INSTANCE;
 											}
 										}
 									}
@@ -633,6 +700,9 @@ public class InfoflowProblem extends AbstractInfoflowProblem {
 										if (aliasing.mayAlias(rightValue, base)) {
 											addLeftValue = true;
 											targetType = newSource.getAccessPath().getBaseType();
+											
+											// [NUS][Tag] source type: local when local field is tainted
+											taintSourceType = TaintSourceType.ASGN_LOCAL_FIELD;
 										}
 									}
 									//y = x[i] && x tainted -> x, y tainted
@@ -643,6 +713,9 @@ public class InfoflowProblem extends AbstractInfoflowProblem {
 											
 											targetType = newSource.getAccessPath().getBaseType();
 											assert targetType instanceof ArrayType;
+											
+											// [NUS][Tag] source type: array ref
+											taintSourceType = TaintSourceType.ASGN_ARRAY_REF;
 										}
 									}
 									// generic case, is true for Locals, ArrayRefs that are equal etc..
@@ -650,6 +723,9 @@ public class InfoflowProblem extends AbstractInfoflowProblem {
 									else if (aliasing.mayAlias(rightValue, newSource.getAccessPath().getPlainValue())) {
 										addLeftValue = true;
 										targetType = newSource.getAccessPath().getBaseType();
+										
+										// [NUS][Tag] source type: generic
+										taintSourceType = TaintSourceType.ASGN_LOCAL;
 									}
 									
 									// One reason to taint the left side is enough
@@ -678,6 +754,14 @@ public class InfoflowProblem extends AbstractInfoflowProblem {
 								
 								Abstraction lenAbs = newSource.deriveNewAbstraction(new AccessPath
 										(leftValue, null, IntType.v(), (Type[]) null, true), assignStmt);
+								
+								// [NUS][Tag] tag lengthof stmt before function return
+								if (lenAbs.isAbstractionActive())
+								{
+									logger.trace("[NUS][TAG] Tagged lengthof assignStmt {} as {}\n\t\t{}",
+											assignStmt, taintSourceType, lenAbs);
+									TaintedStmtTag.enhanceTag(assignStmt, lenAbs, taintSourceType);
+								}
 								return new TwoElementSet<Abstraction>(newSource, lenAbs);
 							}
 								
@@ -689,8 +773,10 @@ public class InfoflowProblem extends AbstractInfoflowProblem {
 							
 							Abstraction targetAB = mappedAP.equals(newSource.getAccessPath()) ? newSource
 									: newSource.deriveNewAbstraction(mappedAP, null);
+							
+							// [NUS][Tag] add tags of not already added here
 							addTaintViaStmt(d1, assignStmt, leftValue, targetAB, res, cutFirstField,
-									interproceduralCFG().getMethodOf(src), targetType);
+									interproceduralCFG().getMethodOf(src), targetType, taintSourceType);
 							res.add(newSource);
 							return res;
 						}
@@ -739,8 +825,18 @@ public class InfoflowProblem extends AbstractInfoflowProblem {
 							}
 
 							if (aliasing.mayAlias(throwStmt.getOp(), source.getAccessPath().getPlainValue()))
-								return Collections.singleton(source.deriveNewAbstractionOnThrow(throwStmt));
-
+							{
+								Abstraction throwAbs = source.deriveNewAbstractionOnThrow(throwStmt);
+								
+								// [NUS][Tag] tag throw stmt
+								if (throwAbs.isAbstractionActive())
+								{
+									logger.trace("[NUS][TAG] tag throw stmt {} as {}\n\t\t{}",
+											throwStmt, TaintSourceType.THROW, throwAbs);
+									TaintedStmtTag.enhanceTag(throwStmt, throwAbs, TaintSourceType.THROW);
+								}	
+								return Collections.singleton(throwAbs);
+							}
 							return Collections.singleton(source);
 						}
 					};
@@ -792,6 +888,14 @@ public class InfoflowProblem extends AbstractInfoflowProblem {
 											&& source.getTopPostdominator() != null
 											&& interproceduralCFG().getMethodOf(postdom.getUnit()) == source.getTopPostdominator().getMethod())) {
 										Abstraction newAbs = source.deriveConditionalAbstractionEnter(postdom, (Stmt) src);
+										
+										// [NUS][Tag] tag conditional stmt
+										if(newAbs.isAbstractionActive())
+										{
+											logger.trace("[NUS][TAG] tag conditional stmt {} as {}\n\t\t{}",
+													(Stmt) src, TaintSourceType.CONDITIONAL, newAbs);
+											TaintedStmtTag.enhanceTag((Stmt) src, newAbs, TaintSourceType.CONDITIONAL);
+										}	
 										res.add(newAbs);
 										break;
 									}
@@ -893,6 +997,15 @@ public class InfoflowProblem extends AbstractInfoflowProblem {
 							}
 							
 							Abstraction abs = source.deriveConditionalAbstractionCall(src);
+							
+							// [NUS][Tag] tag conditional call site
+							if(abs.isAbstractionActive())
+							{
+								logger.trace("[NUS][TAG] tag conditional call site {} as {}\n\t\t{}",
+										stmt, TaintSourceType.CONDITIONAL, abs);
+								TaintedStmtTag.enhanceTag(stmt, abs, TaintSourceType.CONDITIONAL);
+							}
+							
 							return Collections.singleton(abs);
 						}
 						else if (source.getTopPostdominator() != null)
@@ -919,7 +1032,15 @@ public class InfoflowProblem extends AbstractInfoflowProblem {
 								if (hasCompatibleTypesForCall(source.getAccessPath(), dest.getDeclaringClass())) {
 									Abstraction abs = source.deriveNewAbstraction(source.getAccessPath().copyWithNewValue
 											(thisLocal), stmt);
-									res.add(abs);
+									res.add(abs);				
+									
+									// [NUS][Tag] tag call site with tainted base
+									if(abs.isAbstractionActive())
+									{
+										logger.trace("[NUS][TAG] tag call site with tainted base {} as {}\n\t\t{}",
+												stmt, TaintSourceType.CALL_BASE, abs);
+										TaintedStmtTag.enhanceTag(stmt, abs, TaintSourceType.CALL_BASE);
+									}
 								}
 						}
 						// staticfieldRefs must be analyzed even if they are not part of the params:
@@ -932,6 +1053,14 @@ public class InfoflowProblem extends AbstractInfoflowProblem {
 								Abstraction abs = source.deriveNewAbstraction(source.getAccessPath().copyWithNewValue
 										(dest.getActiveBody().getThisLocal()), stmt);
 								res.add(abs);
+								
+								// [NUS][Tag] tag executor call site
+								if(abs.isAbstractionActive())
+								{
+									logger.trace("[NUS][TAG] tag executorExecute call site {} as {}\n\t\t{}",
+											stmt, TaintSourceType.CALL_PARAM, abs);
+									TaintedStmtTag.enhanceTag(stmt, abs, TaintSourceType.CALL_PARAM);
+								}
 							}
 						}
 						else if(!dest.getName().equals("<clinit>")) {
@@ -942,9 +1071,18 @@ public class InfoflowProblem extends AbstractInfoflowProblem {
 									Abstraction abs = source.deriveNewAbstraction(source.getAccessPath().copyWithNewValue
 											(paramLocals[i]), stmt);
 									res.add(abs);
+									
+									// [NUS][Tag] tag call site with tainted param
+									if(abs.isAbstractionActive())
+									{
+										logger.trace("[NUS][TAG] tag call site with tainted param {} as {}\n\t\t{}",
+												stmt, TaintSourceType.CALL_PARAM, abs);
+										TaintedStmtTag.enhanceTag(stmt, abs, TaintSourceType.CALL_PARAM);
+									}
 								}
 							}
 						}
+						
 						return res;
 					}
 				};
@@ -1012,6 +1150,14 @@ public class InfoflowProblem extends AbstractInfoflowProblem {
 									HashSet<Abstraction> res = new HashSet<Abstraction>();
 									res.add(abs);
 									
+									// [NUS][Tag] tag implicit return of constant
+									if(abs.isAbstractionActive())
+									{
+										logger.trace("[NUS][TAG] tag implicit return of constant {} as {}\n\t\t{}",
+												returnStmt, TaintSourceType.RETURN_IMPLICIT, abs);
+										TaintedStmtTag.enhanceTag(returnStmt, abs, TaintSourceType.RETURN_IMPLICIT);
+									}
+									
 									// If we taint a return value because it is implicit,
 									// we must trigger an alias analysis
 									if(triggerInaktiveTaintOrReverseFlow(def, def.getLeftOp(), abs) && !callerD1sConditional)
@@ -1051,6 +1197,9 @@ public class InfoflowProblem extends AbstractInfoflowProblem {
 								return Collections.emptySet();
 						
 						Set<Abstraction> res = new HashSet<Abstraction>();
+						// [NUS][Tag] tag only if there are new abstractions in res (rather than just propagating the source)
+						boolean addTag = false;
+						TaintSourceType tagType = TaintSourceType.NONE;
 						
 						// Check whether this return is treated as a sink
 						if (returnStmt != null) {
@@ -1084,6 +1233,13 @@ public class InfoflowProblem extends AbstractInfoflowProblem {
 										(newSource.getAccessPath().copyWithNewValue(leftOp), (Stmt) exitStmt);
 								res.add(abs);
 								
+								// [NUS][Tag] tag return of tainted value into caller
+								if(abs.isAbstractionActive())
+								{
+									logger.trace("[NUS][TAG] tag return of taint into caller {} as {}\n\t\t{}",
+											returnStmt, TaintSourceType.RETURN_VALUE, abs);
+									TaintedStmtTag.enhanceTag(returnStmt, abs, TaintSourceType.RETURN_VALUE);
+								}
 								// Aliases of implicitly tainted variables must be mapped back
 								// into the caller's context on return when we leave the last
 								// implicitly-called method
@@ -1101,7 +1257,8 @@ public class InfoflowProblem extends AbstractInfoflowProblem {
 							// Simply pass on the taint
 							Abstraction abs = newSource;
 							res.add(abs);
-
+							// [NUS][Tag] simply passing on the taint does not qualify for tagging
+							
 							// Aliases of implicitly tainted variables must be mapped back
 							// into the caller's context on return when we leave the last
 							// implicitly-called method
@@ -1135,7 +1292,14 @@ public class InfoflowProblem extends AbstractInfoflowProblem {
 									Abstraction abs = newSource.deriveNewAbstraction
 											(newSource.getAccessPath().copyWithNewValue(originalCallArg), (Stmt) exitStmt);
 									res.add(abs);
-
+									// [NUS][Tag] tag return of tainted params into caller
+									if(abs.isAbstractionActive())
+									{
+										logger.trace("[NUS][TAG] tag return of params into caller {} as {}\n\t\t{}",
+												(Stmt) exitStmt, TaintSourceType.RETURN_PARAM, abs);
+										TaintedStmtTag.enhanceTag((Stmt) exitStmt, abs, TaintSourceType.RETURN_PARAM);
+									}
+									
 									// Aliases of implicitly tainted variables must be mapped back
 									// into the caller's context on return when we leave the last
 									// implicitly-called method
@@ -1167,6 +1331,14 @@ public class InfoflowProblem extends AbstractInfoflowProblem {
 													(newSource.getAccessPath().copyWithNewValue(iIExpr.getBase()), (Stmt) exitStmt);
 											res.add(abs);
 											
+											// [NUS][Tag] tag return of tainted base into caller
+											if(abs.isAbstractionActive())
+											{
+												logger.trace("[NUS][TAG] tag return of base into caller {} as {}\n\t\t{}",
+														(Stmt) exitStmt, TaintSourceType.RETURN_BASE, abs);
+												TaintedStmtTag.enhanceTag((Stmt) exitStmt, abs, TaintSourceType.RETURN_BASE);
+											}
+													
 											// Aliases of implicitly tainted variables must be mapped back
 											// into the caller's context on return when we leave the last
 											// implicitly-called method
@@ -1257,9 +1429,15 @@ public class InfoflowProblem extends AbstractInfoflowProblem {
 										invExpr, iStmt, false, false);
 								res.add(abs);
 								
+								// [NUS][Tag] tag call-to-return SOURCE
+								logger.info("[NUS][TAG] tag return of params into caller {} as {}\n\t\t{}",
+										iStmt, TaintSourceType.SOURCE, abs);
+								TaintedStmtTag.enhanceTag(iStmt, abs, TaintSourceType.SOURCE);
+								
 								// Compute the aliases
 								if (triggerInaktiveTaintOrReverseFlow(iStmt, target, abs))
 									computeAliasTaints(d1, iStmt, target, res, interproceduralCFG().getMethodOf(call), abs);
+								
 								return res;
 							}
 
@@ -1272,6 +1450,7 @@ public class InfoflowProblem extends AbstractInfoflowProblem {
 								newSource = source;
 							
 							// Compute the taint wrapper taints
+							// [NUS][Tag] add necessary tags for wrapper taints inside computeWrapperTaints functio
 							res.addAll(computeWrapperTaints(d1, iStmt, newSource));
 							
 							// Implicit flows: taint return value
@@ -1281,6 +1460,12 @@ public class InfoflowProblem extends AbstractInfoflowProblem {
 								Abstraction abs = newSource.deriveNewAbstraction(new AccessPath(leftVal, true),
 										(Stmt) call);
 								res.add(abs);
+								if(abs.isAbstractionActive())
+								{
+									logger.info("[NUS][TAG] tag call-to-return implicit {} as {}\n\t\t{}",
+											(Stmt) call, TaintSourceType.IMPLICIT, abs);
+									TaintedStmtTag.enhanceTag((Stmt) call, abs, TaintSourceType.IMPLICIT);
+								}									
 							}
 
 							// We can only pass on a taint if it is neither a parameter nor the
@@ -1333,6 +1518,14 @@ public class InfoflowProblem extends AbstractInfoflowProblem {
 										Set<Abstraction> nativeAbs = ncHandler.getTaintedValues(iStmt, newSource, callArgs);
 										res.addAll(nativeAbs);
 										
+										for(Abstraction abs : nativeAbs)
+											if(abs.isAbstractionActive())
+											{
+												logger.info("[NUS][TAG] tag call-to-return native {} as {}\n\t\t{}",
+														iStmt, TaintSourceType.WRAPPER_NATIVE, abs);
+												TaintedStmtTag.enhanceTag(iStmt, abs, TaintSourceType.WRAPPER_NATIVE);
+											}		
+										
 										// Compute the aliases
 										for (Abstraction abs : nativeAbs)
 											if (abs.getAccessPath().isStaticFieldRef()
@@ -1368,13 +1561,24 @@ public class InfoflowProblem extends AbstractInfoflowProblem {
 								}
 								
 								if (taintedParam && newSource.isAbstractionActive())
+								{
 									addResult(new AbstractionAtSink(newSource, invExpr, iStmt));
+
+									// [NUS][Tag] tag sink with tainted param
+									TaintedStmtTag.enhanceTag(iStmt, newSource, TaintSourceType.SINK_PARAM);
+									
+								}
 								// if the base object which executes the method is tainted the sink is reached, too.
 								if (invExpr instanceof InstanceInvokeExpr) {
 									InstanceInvokeExpr vie = (InstanceInvokeExpr) iStmt.getInvokeExpr();
 									if (newSource.isAbstractionActive()
 											&& aliasing.mayAlias(vie.getBase(), newSource.getAccessPath().getPlainValue()))
+									{
 										addResult(new AbstractionAtSink(newSource, invExpr, iStmt));
+									
+										// [NUS][Tag] tag sink with tainted base
+										TaintedStmtTag.enhanceTag(iStmt, newSource, TaintSourceType.SINK_BASE);
+									}
 								}
 							}
 							

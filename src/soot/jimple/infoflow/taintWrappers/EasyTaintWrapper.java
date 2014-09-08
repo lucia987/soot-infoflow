@@ -35,6 +35,7 @@ import soot.jimple.Stmt;
 import soot.jimple.infoflow.data.AccessPath;
 import soot.jimple.infoflow.solver.IInfoflowCFG;
 import soot.jimple.infoflow.util.SootMethodRepresentationParser;
+import soot.util.IdentityHashSet;
 
 import com.google.common.cache.CacheBuilder;
 import com.google.common.cache.CacheLoader;
@@ -152,7 +153,8 @@ public class EasyTaintWrapper extends AbstractTaintWrapper implements Cloneable 
 		if (!stmt.containsInvokeExpr())
 			return Collections.emptySet();
 		
-		final Set<AccessPath> taints = new HashSet<AccessPath>();
+		//final Set<AccessPath> taints = new IdentityHashSet<AccessPath>();
+		final Set<AccessPath> taints = Collections.newSetFromMap(new java.util.IdentityHashMap<AccessPath,Boolean>());
 		final SootMethod method = stmt.getInvokeExpr().getMethod();
 		boolean hasNoBody = false;
 		
@@ -222,7 +224,7 @@ public class EasyTaintWrapper extends AbstractTaintWrapper implements Cloneable 
 				
 		//if param is tainted && classList contains classname && if list. contains signature of method -> add propagation
 		if ((isSupported && wrapType == MethodWrapType.CreateTaint)
-				|| (hasNoBody && wrapType == MethodWrapType.NotRegistered
+				|| (hasNoBody //&& wrapType == MethodWrapType.NotRegistered
 				&& !method.getDeclaringClass().getName().startsWith("android")))
 		{
 			for (Value param : stmt.getInvokeExpr().getArgs()) {

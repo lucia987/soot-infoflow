@@ -16,6 +16,9 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.Set;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import soot.ArrayType;
 import soot.Local;
 import soot.RefType;
@@ -482,6 +485,14 @@ public class AccessPath implements Cloneable {
 			return false;
 		if (this.value != null && !this.value.equals(a2.value))
 			return false;
+		
+		// [NUS][Tag] Added to avoid NullExceptions
+		if (this.fields == null)
+			return true;
+		
+		if (a2.fields == null)
+			return false;
+		// [NUS][Tag] End 
 		
 		if (this.fields.length > a2.fields.length)
 			return false;

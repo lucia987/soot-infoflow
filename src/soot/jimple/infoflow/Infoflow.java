@@ -24,6 +24,9 @@ import java.util.Set;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 
+import nus.soc.extensions.PartitionResultsAvailableHandler;
+import nus.soc.extensions.TaintedStmtTag;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -163,10 +166,15 @@ public class Infoflow extends AbstractInfoflow {
 				
 		Options.v().set_no_bodies_for_excluded(true);
 		Options.v().set_allow_phantom_refs(true);
+		/*
 		if (logger.isDebugEnabled())
 			Options.v().set_output_format(Options.output_format_jimple);
 		else
 			Options.v().set_output_format(Options.output_format_none);
+		*/
+		// [NUS][Tag] Jimple output
+		Options.v().set_output_format(Options.output_format_jimple);
+		//Options.v().set_output_format(Options.output_format_dava);
 		
 		// We only need to distinguish between application and library classes
 		// if we use the OnTheFly ICFG
@@ -228,6 +236,9 @@ public class Infoflow extends AbstractInfoflow {
 		// do not merge variables (causes problems with PointsToSets)
 		Options.v().setPhaseOption("jb.ulp", "off");
 		
+		// [NUS][tag] Jimple Body phase: keep original variable names
+		//Options.v().setPhaseOption("jb", "use-original-names");
+		
 		if (!this.androidPath.isEmpty()) {
 			Options.v().set_src_prec(Options.src_prec_apk);
 			if (this.forceAndroidJar)
@@ -283,8 +294,11 @@ public class Infoflow extends AbstractInfoflow {
 	        PackManager.v().getPack("cg").apply();
 		}
         runAnalysis(sourcesSinks, null);
-		if (logger.isDebugEnabled())
+        // [NUS][Tag] writeOutput in resultsHandler
+        /*
+        if (logger.isDebugEnabled())
 			PackManager.v().writeOutput();
+		*/
 	}
 
 
@@ -325,9 +339,10 @@ public class Infoflow extends AbstractInfoflow {
 	        PackManager.v().getPack("wjpp").apply();
 	        PackManager.v().getPack("cg").apply();
 		}
+		
         runAnalysis(sourcesSinks, seeds);
 		if (logger.isDebugEnabled())
-			PackManager.v().writeOutput();
+			PackManager.v().writeOutput();	
 	}
 
 	private void runAnalysis(final ISourceSinkManager sourcesSinks, final Set<String> additionalSeeds) {
@@ -499,6 +514,7 @@ public class Infoflow extends AbstractInfoflow {
 					for (Unit p : source.getPath()) {
 						logger.info("\t -> " + iCfg.getMethodOf(p));
 						logger.info("\t\t -> " + p);
+						logger.info("\t\t ->>" + p.getTag(TaintedStmtTag.TAG_NAME));
 					}
 				}
 			}
@@ -584,6 +600,7 @@ public class Infoflow extends AbstractInfoflow {
 			InfoflowProblem forwardProblem,
 			SootMethod m) {
 		int sinkCount = 0;
+		
 		if (m.hasActiveBody()) {
 			// Check whether this is a system class we need to ignore
 			final String className = m.getDeclaringClass().getName();
@@ -604,8 +621,7 @@ public class Infoflow extends AbstractInfoflow {
 		            logger.debug("Sink found: {}", u);
 					sinkCount++;
 				}
-			}
-			
+			}	
 		}
 		return sinkCount;
 	}

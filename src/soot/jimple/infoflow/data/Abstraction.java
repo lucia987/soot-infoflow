@@ -286,6 +286,14 @@ public class Abstraction implements Cloneable, FastSolverLinkedNode<Abstraction>
 	@Override
 	public String toString(){
 		return (isAbstractionActive()?"":"_")+accessPath.toString() + " | "+(activationUnit==null?"":activationUnit.toString()) + ">>";
+		/*return ") sourceContext(" + sourceContext +
+				") accessPath(" + accessPath +
+				") activUnit(" + activationUnit +
+				") exceptionThrown(" + exceptionThrown +
+				") posdominator(" + postdominators +
+				") dependsOnCutAP(" + dependsOnCutAP +
+				") isImplicit(" + isImplicit + ")";
+				*/
 	}
 	
 	public AccessPath getAccessPath(){

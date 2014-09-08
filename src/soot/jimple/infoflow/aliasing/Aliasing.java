@@ -5,6 +5,9 @@ import heros.solver.Pair;
 
 import java.util.Collection;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import soot.Local;
 import soot.RefLikeType;
 import soot.SootField;
@@ -124,10 +127,19 @@ public class Aliasing {
 							System.arraycopy(base.getO2(), 0, cutFieldTypes, fieldIdx, base.getO2().length);
 							System.arraycopy(taintedAP.getFieldTypes(), fieldIdx, cutFieldTypes,
 									fieldIdx + base.getO2().length, taintedAP.getFieldCount() - fieldIdx);
-
+							
 							return new AccessPath(taintedAP.getPlainValue(),
 									cutFields, taintedAP.getBaseType(), cutFieldTypes,
 									taintedAP.getTaintSubFields(), false, false);
+							/*
+							AccessPath tmp = new AccessPath(taintedAP.getPlainValue(),
+									cutFields, taintedAP.getBaseType(), cutFieldTypes,
+									taintedAP.getTaintSubFields(), false, false);
+						    Logger logger = LoggerFactory.getLogger(getClass());
+							logger.info("LUCIA: Access Path\n{} \n\t\tfrom source\n\t\t{}\n\t\tand reference\n\t\t{}",
+									tmp, taintedAP, referencedAP);
+							return tmp;
+							*/
 						}
 					}
 					

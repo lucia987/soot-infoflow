@@ -11,6 +11,7 @@
 package soot.jimple.infoflow.util;
 
 import soot.Value;
+import soot.ValueBox;
 import soot.jimple.ArrayRef;
 import soot.jimple.BinopExpr;
 import soot.jimple.UnopExpr;
@@ -45,6 +46,22 @@ public class BaseSelector {
 		return val;
 	}
 
+	public static ValueBox selectBaseBox(ValueBox val, boolean keepArrayRef){
+		//we taint base of array instead of array elements
+		if (val.getValue() instanceof ArrayRef && !keepArrayRef) {
+			return selectBaseBox(((ArrayRef) val.getValue()).getBaseBox(), keepArrayRef);
+		}
+		
+		if (val.getValue() instanceof JCastExpr) {
+			return selectBaseBox(((JCastExpr) val.getValue()).getOpBox(), keepArrayRef);
+		}
+		
+		// Check for unary operators like "not" or "length"
+		if (val.getValue() instanceof UnopExpr)
+			return selectBaseBox(((UnopExpr) val.getValue()).getOpBox(), keepArrayRef);
+		
+		return val;
+	}
 	/**
 	 * the operations that are not relevant for analysis like "not" or casts
 	 * are removed - array refs are only removed if explicitly stated
@@ -62,6 +79,17 @@ public class BaseSelector {
 			return set;
 		}
 		return new Value[] { selectBase(val, keepArrayRef) };
+	}
+	
+	public static ValueBox[] selectBaseBoxList(ValueBox val, boolean keepArrayRef){
+		if (val.getValue() instanceof BinopExpr) {
+			ValueBox[] set = new ValueBox[2];
+			BinopExpr expr = (BinopExpr) val.getValue();
+			set[0] = expr.getOp1Box();
+			set[1] = expr.getOp2Box();
+			return set;
+		}
+		return new ValueBox[] { selectBaseBox(val, keepArrayRef) };
 	}
 	
 }

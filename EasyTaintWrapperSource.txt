@@ -2,6 +2,7 @@
 ^android.
 ^java.
 ^org.apache.http.
+^javax.crypto
 
 <java.util.Stack: java.lang.Object push(java.lang.Object)>
 
@@ -10,6 +11,7 @@
 
 <java.util.TreeMap: void <init>(java.util.Map)>
 <java.util.HashMap: void <init>(java.util.Map)>
+
 <java.util.WeakHashMap: void <init>(java.util.Map)>
 <java.util.ConcurrentHashMap: void <init>(java.util.Map)>
 <java.util.LinkedHashMap: void <init>(java.util.Map)>
@@ -194,7 +196,12 @@
 <java.lang.Boolean: java.lang.String toString(boolean)>
 
 <java.lang.Character: void <init>(char)>
-<java.lang.Character: java.lang.Boolean valueOf(char)>
+%---- BUGFIX Added by Lucia ----%
+% Line below commented out by Lucia
+% <java.lang.Character: java.lang.Boolean valueOf(char)>
+% Line below added by Lucia
+<java.lang.Character: java.lang.Character valueOf(char)>
+
 <java.lang.Character: char forDigit(int,int)>
 
 <java.lang.Error: void <init>(java.lang.String)>
@@ -336,3 +343,31 @@
 <java.nio.ByteBuffer: java.nio.ByteBuffer putLong(int,long)>
 <java.nio.ByteBuffer: java.nio.ByteBuffer putShort(short)>
 <java.nio.ByteBuffer: java.nio.ByteBuffer putShort(int,short)>
+
+%---- Added by Lucia for GoogleAuthenticatorAndroid ----%
+%<android.content.ContentValues: void put(java.lang.String,java.lang.String)>
+%%%~<java.util.HashMap: java.lang.Object get(java.lang.Object)>
+%%%~<java.util.HashMap: boolean containsKey(java.lang.Object)>
+
+%<java.lang.Integer: int intValue()>
+
+% Added by Lucia: Crypto Libs
+%<javax.crypto.spec.SecretKeySpec: void <init>(byte[],java.lang.String)>
+%<javax.crypto.Mac: void init(java.security.Key)>
+
+% TODO: remove after EasyTaintWrappers fixed %
+% Added by Lucia for PasscodeGenerator.hashToInt()
+%<java.io.ByteArrayInputStream: void <init>(byte[],int,int)>
+%<java.io.DataInputStream: void <init>(java.io.InputStream)>
+%<java.io.DataInput: int readInt()>
+
+% TODO: remove after EasyTaintWrappers fixed %
+% Added by Lucia for PasscodeGenerator.padOutput()
+%<java.lang.Integer: java.lang.String toString(int)>
+%<java.lang.StringBuilder: java.lang.String toString()>
+
+%---- Added by Lucia for ChatSecureAndroid ----%
+
+% Exclude SQLLite Database from tainting base object
+%~<android.database.sqlite.SQLiteDatabase: int update(java.lang.String, android.content.ContentValues, java.lang.String, java.lang.String[])>
+%~<android.database.sqlite.SQLiteDatabase: long insert(java.lang.String, java.lang.String, android.content.ContentValues)>

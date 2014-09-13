@@ -6,13 +6,10 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
-import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.List;
+import java.util.Map.Entry;
 import java.util.Set;
-import java.util.Stack;
-
-import javax.xml.transform.Source;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -27,6 +24,7 @@ import soot.SootField;
 import soot.SootMethod;
 import soot.Type;
 import soot.Unit;
+import soot.UnitBox;
 import soot.Value;
 import soot.ValueBox;
 import soot.VoidType;
@@ -57,7 +55,6 @@ import soot.jimple.infoflow.data.AccessPath;
 import soot.jimple.infoflow.handlers.ResultsAvailableHandler;
 import soot.jimple.infoflow.solver.IInfoflowCFG;
 import soot.jimple.infoflow.util.BaseSelector;
-import soot.options.Options;
 
 class SourceAbstractionAndStmt 
 {
@@ -121,12 +118,14 @@ public final class PartitionResultsAvailableHandler implements ResultsAvailableH
 	HashMap<SootMethodContext,Integer> methodContextSliceCounter;
 	HashSet<SootMethodContext> methodContextLog;
 	HashMap<SootMethodContext, Boolean> methodContextNeedsRefactorCache;
-	
+	HashMap<SootMethodContext, Set<Abstraction>> worklist;
 	
 	Aliasing aliasing;
 	private static HashMap<Value, Value> proxyCache;
 	Set<SootClass> pathClasses;
 	//HashSet<SourceAbstractionAndStmt> processedStmts;
+
+	static final Set<Abstraction> zeroSet = Collections.singleton(TaintedStmtTag.getZeroAbstraction());
 	
 	public PartitionResultsAvailableHandler() {
 	//	this.wr = null;
@@ -137,6 +136,8 @@ public final class PartitionResultsAvailableHandler implements ResultsAvailableH
 		methodContextSliceCounter = new HashMap<SootMethodContext, Integer>();
 		methodContextLog = new HashSet<SootMethodContext>();
 		methodContextNeedsRefactorCache = new HashMap<SootMethodContext, Boolean>();
+		
+		worklist = new HashMap<SootMethodContext, Set<Abstraction>>();
 		
 		proxyCache = new HashMap<Value, Value>();
 		pathClasses = new HashSet<SootClass>();
@@ -164,62 +165,29 @@ public final class PartitionResultsAvailableHandler implements ResultsAvailableH
 			for (SourceInfo source : results.getResults().get(sink)) {
 				print("\t- " + source.getSource() + " (in "
 						+ cfg.getMethodOf(source.getContext()).getSignature()  + ")");
-				if (source.getPath() != null && !source.getPath().isEmpty())
-				{
-					//print("\t\ton Path " + source.getPath());
-					// [NUS] print tags
-					Stack<Set<Abstraction>> callerD1s = new Stack<Set<Abstraction>>();
-					Set<Abstraction> currentD1s = Collections.singleton(TaintedStmtTag.getZeroAbstraction());
-					
-					print("\t\ton Path \n");
-					Iterator<Stmt> path = source.getPath().iterator();
-					Stmt currentStmt = path.hasNext()? path.next(): null;
-					Stmt nextStmt = path.hasNext()? path.next(): null;
-					
-					while (currentStmt != null) {
-						printStmt(currentStmt);
-						
-						SootMethod method = cfg.getMethodOf(currentStmt);
-						pathClasses.add(method.getDeclaringClass());	
-						
-						// We do not change context d1 set if the called method is taint-wrapped
-						// or unavailable
-						boolean nextStmtInOtherMethod = (nextStmt != null) &&
-								!method.equals(cfg.getMethodOf(nextStmt)); 
-						if (cfg.isCallStmt(currentStmt) && nextStmtInOtherMethod)
-						{
-								callerD1s.push(currentD1s);
-								currentD1s = TaintedStmtTag.getCalleeD1s(currentStmt, currentD1s);
-						}
-						else if (cfg.isExitStmt(currentStmt))
-						{
-							if(callerD1s.isEmpty())
-								currentD1s = Collections.singleton(TaintedStmtTag.getZeroAbstraction());
-							else
-								currentD1s = callerD1s.pop();
-						} else {
-							SootMethodContext smc = new SootMethodContext(method, currentD1s);
-							if (!methodContextLog.contains(smc))
-							{
-								logger.info("LUCIA: processMethodContext {}", smc);
-								
-								Set<Abstraction> lastCallerD1s;
-								if(callerD1s.isEmpty())
-									lastCallerD1s = Collections.singleton(TaintedStmtTag.getZeroAbstraction());
-								else 
-									lastCallerD1s = callerD1s.peek();
-								processMethodContext(cfg, smc, lastCallerD1s);
-
-								methodContextLog.add(smc);
-							}
-						}
-						logger.info("[NUS][Tag] currentD1s {}", currentD1s);
-						
-						currentStmt = nextStmt;
-						nextStmt = path.hasNext()? path.next(): null;
-					}
-				}
+				
+				// Put source context method in worklist
+				worklist.put(new SootMethodContext(cfg.getMethodOf(source.getContext()), zeroSet),
+						zeroSet);
 			}
+		}
+		
+		// Process worklist
+		while(!worklist.isEmpty()) {
+			Entry<SootMethodContext, Set<Abstraction>> firstInWorklist = worklist.entrySet().iterator().next();
+			SootMethodContext smc = firstInWorklist.getKey();
+			Set<Abstraction> callerD1s = firstInWorklist.getValue();
+			
+			if (!methodContextLog.contains(smc))
+			{
+				pathClasses.add(smc.getMethod().getDeclaringClass());	
+				
+				logger.info("LUCIA: processMethodContext {}", smc);
+				processMethodContext(cfg, smc, callerD1s);
+				methodContextLog.add(smc);
+			}
+			
+			worklist.remove(smc);
 		}
 		
 		for (SootClass cls: pathClasses)
@@ -315,7 +283,7 @@ public final class PartitionResultsAvailableHandler implements ResultsAvailableH
 			SootMethod refactorMethod = getRepresentationForMethodContext(methodContext);
 			
 			PatchingChain<Unit> unitChain = method.getActiveBody().getUnits();
-			HashMap<Unit, List<Unit>> replaceUnits = new HashMap<Unit, List<Unit>>();
+			HashMap<Unit, LinkedList<Unit>> replaceUnits = new HashMap<Unit, LinkedList<Unit>>();
 			//HashMap<Local,Local> teeObjects;
 			
 			for (Unit unit: unitChain)
@@ -326,7 +294,7 @@ public final class PartitionResultsAvailableHandler implements ResultsAvailableH
 				if(methodData.isEmpty()) {
 					if(refactorStmt != null) {
 						logger.error("LUCIA: replaceUnits {} with\n\t\t{}", unit, refactorStmt);
-						replaceUnits.put(unit, Arrays.asList(new Unit[]{refactorStmt}));
+						replaceUnits.put(unit, new LinkedList<Unit>(Arrays.asList(new Unit[]{refactorStmt})));
 					}
 					continue;
 				}
@@ -345,7 +313,7 @@ public final class PartitionResultsAvailableHandler implements ResultsAvailableH
 				Stmt methodSliceCallStmt = Jimple.v().newInvokeStmt(ie);
 				
 				// Create NewExpr initialization for return taints
-				List<Unit> refactorUnitList = methodData.getTaintRetInitialization();
+				LinkedList<Unit> refactorUnitList = methodData.getTaintRetInitialization();
 				refactorUnitList.add(methodSliceCallStmt);
 				
 				// Make sure to replace original stmt with the replacer stmts
@@ -355,25 +323,45 @@ public final class PartitionResultsAvailableHandler implements ResultsAvailableH
 
 			// FIXME: Copy old method to new refactorMethod
 			PatchingChain<Unit> refactorChain = refactorMethod.getActiveBody().getUnits();
+			
+			// Make sure there is a replaceUnit for every unit
+			// We cannot add the same units because of their connections with the old method body
 			for (Unit unit: unitChain) {
-				List<Unit> refactorUnits = replaceUnits.get(unit);
+				LinkedList<Unit> refactorUnits = replaceUnits.get(unit);
 				if(refactorUnits == null) {
-					refactorUnits = Arrays.asList(new Unit[] {(Unit)unit.clone()});
-					//refactorChain.add((Unit) unit.clone());
-					//continue;
+					refactorUnits = new LinkedList<Unit>();
+					refactorUnits.add((Unit)unit.clone());
+					replaceUnits.put(unit,  refactorUnits);
+				}
+			}
+			
+			// Refactor units
+			for (Unit unit: unitChain) {
+				LinkedList<Unit> refactorUnits = replaceUnits.get(unit);
+				// Fix branch targets
+				for (Unit refactorUnit : refactorUnits)
+				{
+					if (refactorUnit.branches())
+					{
+						List<UnitBox> targets = refactorUnit.getUnitBoxes();
+						for(UnitBox targetBox: targets)
+							targetBox.setUnit(replaceUnits.get(targetBox.getUnit()).getFirst());
+					}
 				}
 				
+				// Add to new chain
 				refactorChain.addAll(refactorUnits);
+			}
+			
+			// Add new Locals from def and use boxes if needed
+			for(Unit unit: refactorChain) {
 				
-				// Add new Locals from def and use boxes if needed
-				for(Unit refactorUnit: refactorUnits) {
-					List<ValueBox> valueBoxes = refactorUnit.getUseAndDefBoxes();
-					for(ValueBox valueBox: valueBoxes) {
-						if(valueBox.getValue() instanceof Local &&
-								! refactorMethod.getActiveBody().getLocals().contains(valueBox.getValue())) {
-							
-							refactorMethod.getActiveBody().getLocals().add((Local) valueBox.getValue());
-						}
+				List<ValueBox> valueBoxes = unit.getUseAndDefBoxes();
+				for(ValueBox valueBox: valueBoxes) {
+					if(valueBox.getValue() instanceof Local &&
+							! refactorMethod.getActiveBody().getLocals().contains(valueBox.getValue())) {
+						
+						refactorMethod.getActiveBody().getLocals().add((Local) valueBox.getValue());
 					}
 				}
 			}
@@ -456,6 +444,10 @@ public final class PartitionResultsAvailableHandler implements ResultsAvailableH
 			SootMethodContext calleeContext = new SootMethodContext(methodCalled, calleeD1s);
 			if(methodContextNeedsRefactor(calleeContext))
 			{
+				// Add to worklist
+				worklist.put(calleeContext, d1s);
+				
+				// Refactor
 				SootMethod methodToCall = getRepresentationForMethodContext(calleeContext);
 				if (!methodToCall.equals(methodCalled)) {
 					if (refactorStmt == null)
@@ -589,9 +581,10 @@ public final class PartitionResultsAvailableHandler implements ResultsAvailableH
 								AccessPath valueAP = new AccessPath(useBox.getValue(), false);
 								AccessPath mappedAP = aliasing.mayAlias(sfat.getSource().getAccessPath(), valueAP);
 								
-								logger.error("LUCIA:\n\t\tmappedAP {}\n\t\tsource {}\n\t\tvalueAP {}", mappedAP, sfat.getSource(), valueAP);
 								// Check if mappedAP is equal to the value used (not more specific)
 								if(mappedAP != null && mappedAP.entails(valueAP)) {
+									logger.error("LUCIA hasStmtThatNeedsRefactor:\n\t\tmappedAP {}\n\t\tsource {}\n\t\tvalueAP {}", mappedAP, sfat.getSource(), valueAP);
+									
 									hasStmtThatNeedsRefactor = true;
 									break;
 								}	
@@ -604,9 +597,10 @@ public final class PartitionResultsAvailableHandler implements ResultsAvailableH
 								AccessPath valueAP = new AccessPath(defBox.getValue(), false);
 								AccessPath mappedAP = aliasing.mayAlias(sfat.getSuccessor().getAccessPath(), valueAP);
 								
-								//logger.error("LUCIA:\n\t\tmappedAP {}\n\t\tsuccessor {}\n\t\tvalueAP {}", mappedAP, sfat.getSuccessor(), valueAP);
 								// Check if mappedAP is equal to the value used (not more specific)
 								if(mappedAP != null && mappedAP.entails(valueAP)) {
+									logger.error("LUCIA hasStmtThatNeedsRefactor:\n\t\tmappedAP {}\n\t\tsuccessor {}\n\t\tvalueAP {}", mappedAP, sfat.getSuccessor(), valueAP);
+									
 									hasStmtThatNeedsRefactor = true;
 									break;
 								}
@@ -621,7 +615,8 @@ public final class PartitionResultsAvailableHandler implements ResultsAvailableH
 				}
 			}
 		}
-		
+		if(hasStmtThatNeedsRefactor)
+			logger.error("LUCIA: hasStmtThatNeedsRefactor smc {} = {}", smc, hasStmtThatNeedsRefactor);
 		methodContextNeedsRefactorCache.put(smc, hasStmtThatNeedsRefactor);
 		return hasStmtThatNeedsRefactor;
 	}
@@ -636,6 +631,7 @@ public final class PartitionResultsAvailableHandler implements ResultsAvailableH
 		if(sfat.getType() == TaintSourceType.CALL_BASE ||
 				sfat.getType() == TaintSourceType.CALL_PARAM ||
 				TaintedStmtTag.isCallsiteReturnType(sfat.getType())) {
+			
 			refactorStmt = refactorCallStmt(stmt, d1s, sfat, refactorStmt);
 			return refactorStmt;
 		}
@@ -859,10 +855,16 @@ public final class PartitionResultsAvailableHandler implements ResultsAvailableH
 			{
 				Value right = rightBoxes[i].getValue();
 				if(right instanceof Local) {
-					
-					if(type == TaintSourceType.ASGN_LOCAL &&
-						aliasing.mayAlias(right, source.getAccessPath().getPlainValue())) {
-						methodData.addTaintParam(right, true);
+					if(aliasing.mayAlias(right, source.getAccessPath().getPlainValue())) {
+						// x = y and y is tainted
+						if (type == TaintSourceType.ASGN_LOCAL)
+							methodData.addTaintParam(right, true);
+						// x = y and y.f is tainted
+						else if (type == TaintSourceType.ASGN_LOCAL_FIELD)
+							// do nothing; a field is tainted, not the variable in use
+							createProxyMethod = false;
+						else
+							throw new UnsupportedOperationException("right local with unsupported type");
 					} else
 						methodData.addTaintParam(right, false);
 				
@@ -871,9 +873,10 @@ public final class PartitionResultsAvailableHandler implements ResultsAvailableH
 					Value rightIndex = ((ArrayRef)right).getIndex();
 					
 					// Add Array base as parameter to new placeholder method
-					if(type == TaintSourceType.ASGN_ARRAY_REF &&
-							aliasing.mayAlias(rightBaseBox.getValue(), source.getAccessPath().getPlainValue())) {
-						methodData.addTaintParam(rightBaseBox.getValue(), true);
+					if(aliasing.mayAlias(rightBaseBox.getValue(), source.getAccessPath().getPlainValue())) {
+						if(type == TaintSourceType.ASGN_ARRAY_REF)
+							methodData.addTaintParam(rightBaseBox.getValue(), true);
+						else throw new UnsupportedOperationException("unsupported type in ArrayRef assignment");
 					} else
 						methodData.addTaintParam(rightBaseBox.getValue(), false);
 					
@@ -888,7 +891,7 @@ public final class PartitionResultsAvailableHandler implements ResultsAvailableH
 
 					// Refactor only if right op is tainted (not one of its subfields)
 					if(type == TaintSourceType.ASGN_INSTANCE_FIELD &&
-							mappedAP.entails(rightAP)){
+							mappedAP.entails(rightAP)) {
 	
 						Value proxyInstanceFieldRef = getProxyValue(right);
 						
@@ -909,29 +912,34 @@ public final class PartitionResultsAvailableHandler implements ResultsAvailableH
 				// only if right side is Local, left can assume not Local type
 				if(leftBox.getValue() instanceof Local)
 				{
-					if((type == TaintSourceType.ASGN_LOCAL ||
-							type == TaintSourceType.ASGN_ARRAY_REF) &&
-							(aliasing.mayAlias(leftBox.getValue(), dest.getAccessPath().getPlainValue())))
+					if (aliasing.mayAlias(leftBox.getValue(), dest.getAccessPath().getPlainValue()))
 					{
-						methodData.addTaintRet(leftBox.getValue(), true);
+						if(type == TaintSourceType.ASGN_LOCAL ||
+							type == TaintSourceType.ASGN_ARRAY_REF)
+						{
+							methodData.addTaintRet(leftBox.getValue(), true);
 						
-					} else if(type == TaintSourceType.ASGN_INSTANCE_FIELD &&
-						aliasing.mayAlias(leftBox.getValue(), dest.getAccessPath().getPlainValue())) {
-					
-						AccessPath leftAP = new AccessPath(leftBox.getValue(), false);
-						AccessPath mappedAP = aliasing.mayAlias(dest.getAccessPath(), leftAP);
-						assert (mappedAP != null);
-						
-						if(mappedAP.entails(leftAP)) {
-							if(refactorStmt == null)
-								refactorStmt = (Stmt) assignStmt.clone();
-						
-							ValueBox refactorLeftBox = BaseSelector.selectBaseBox(
-									((AssignStmt)refactorStmt).getLeftOpBox(), true); 
-							refactorLeftBox.setValue(getProxyValue(leftBox.getValue()));	
-						}
-						
-						createProxyMethod = false;
+						} else if(type == TaintSourceType.ASGN_INSTANCE_FIELD) {
+							AccessPath leftAP = new AccessPath(leftBox.getValue(), false);
+							AccessPath mappedAP = aliasing.mayAlias(dest.getAccessPath(), leftAP);
+							assert (mappedAP != null);
+							
+							if(mappedAP.entails(leftAP)) {
+								if(refactorStmt == null)
+									refactorStmt = (Stmt) assignStmt.clone();
+							
+								ValueBox refactorLeftBox = BaseSelector.selectBaseBox(
+										((AssignStmt)refactorStmt).getLeftOpBox(), true); 
+								refactorLeftBox.setValue(getProxyValue(leftBox.getValue()));	
+							}
+							
+							createProxyMethod = false;
+						// x = y, y.f tainted -> x.f becomes tainted => no refactoring or substitution with method needed
+						} else if(type == TaintSourceType.ASGN_LOCAL_FIELD) {
+							// do nothing
+							createProxyMethod = false;
+						} else 
+							throw new UnsupportedOperationException("Assignment to Local with Unsupported type");
 					} else {
 						boolean aliases = aliasing.mayAlias(leftBox.getValue(), dest.getAccessPath().getPlainValue());
 						logger.error("LUCIA: {} aliases {} returns {}",
@@ -940,6 +948,7 @@ public final class PartitionResultsAvailableHandler implements ResultsAvailableH
 								aliases);
 						throw new UnsupportedOperationException(
 								"Assignment to Local does not alias destination Abstraction");
+
 					}
 				} else if(leftBox.getValue() instanceof ArrayRef) {
 					Value leftBase = ((ArrayRef) leftBox.getValue()).getBase();
@@ -1123,8 +1132,8 @@ public final class PartitionResultsAvailableHandler implements ResultsAvailableH
 			return (Local)clone;
 		}
 		
-		public List<Unit> getTaintRetInitialization() {
-			List<Unit> units = new LinkedList<Unit>();
+		public LinkedList<Unit> getTaintRetInitialization() {
+			LinkedList<Unit> units = new LinkedList<Unit>();
 			for(Value retTaint: returnTaints.values())
 			{
 				units.add(Jimple.v().newAssignStmt(retTaint,
